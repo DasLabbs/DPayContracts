@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import { Web3Utils } from "../utils";
+import { Web3Utils } from "../../utils";
 
 const main = async () => {
   const web3Utils = new Web3Utils({

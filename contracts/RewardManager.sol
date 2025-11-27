@@ -5,28 +5,35 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "./RewardVault.sol";
-import "./OrderNFT.sol";
+import "@prb/math/src/UD60x18.sol";
 
 /**
- * @title ClaimReward
+ * @title RewardManager
  * @dev Contract for claiming rewards with signature verification
  * Users can claim rewards by providing a valid signature from an authorized signer
  */
-contract ClaimReward is AccessControl {
+contract RewardManager is AccessControl {
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
 
     bytes32 public constant SIGNER_ROLE = keccak256("SIGNER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant POINTS_MANAGER_ROLE = keccak256("POINTS_MANAGER_ROLE");
 
     RewardVault public vault;
-    OrderNFT public orderNFT;
 
     // Mapping to prevent replay attacks
     mapping(address => uint256) public nonces;
+    mapping(address => uint256) public userPoints;
 
     // Mapping to track claimed points per user
     mapping(address => uint256) public claimedPoints;
+
+    uint256 public constant POINTS_SCALE = 1e18;
+
+    uint256 public totalPoints;
+    UD60x18 public immutable k = UD60x18.wrap(316227766017000);
+    UD60x18 public immutable a = UD60x18.wrap(1096910013008056000);
 
     // Configuration: minimum points required to claim (0 means disabled)
     uint256 public minPointsToClaim;
@@ -50,26 +57,25 @@ contract ClaimReward is AccessControl {
         uint256 nonce
     );
 
+    event PointsAdded(address indexed user, uint256 points);
+
     event NonceUpdated(address indexed user, uint256 oldNonce, uint256 newNonce);
     event PointsClaimed(address indexed user, uint256 points);
     event MinPointsToClaimUpdated(uint256 oldValue, uint256 newValue);
 
-    constructor(address _vault, address _orderNFT, address admin) {
-        require(_vault != address(0), "ClaimReward: invalid vault address");
-        require(_orderNFT != address(0), "ClaimReward: invalid order NFT address");
-        require(admin != address(0), "ClaimReward: invalid admin address");
+    constructor(address _vault) {
+        require(_vault != address(0), "RewardManager: invalid vault address");
 
         vault = RewardVault(_vault);
-        orderNFT = OrderNFT(_orderNFT);
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
 
         // Initialize domain separator for EIP-712
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes("ClaimReward")),
+                keccak256(bytes("RewardManager")),
                 keccak256(bytes("1")),
                 block.chainid,
                 address(this)
@@ -90,9 +96,9 @@ contract ClaimReward is AccessControl {
      * @param signature Signature from authorized signer
      */
     function claimReward(ClaimData memory claimData, bytes memory signature) external {
-        require(claimData.user == msg.sender, "ClaimReward: invalid user");
-        require(claimData.deadline >= block.timestamp, "ClaimReward: signature expired");
-        require(claimData.nonce == nonces[msg.sender], "ClaimReward: invalid nonce");
+        require(claimData.user == msg.sender, "RewardManager: invalid user");
+        require(claimData.deadline >= block.timestamp, "RewardManager: signature expired");
+        require(claimData.nonce == nonces[msg.sender], "RewardManager: invalid nonce");
 
         // Verify signature
         bytes32 structHash = keccak256(
@@ -109,13 +115,13 @@ contract ClaimReward is AccessControl {
         bytes32 signedHash = _hashTypedDataV4(structHash);
         address signer = signedHash.recover(signature);
 
-        require(hasRole(SIGNER_ROLE, signer), "ClaimReward: invalid signature");
+        require(hasRole(SIGNER_ROLE, signer), "RewardManager: invalid signature");
 
         // Check points if validation is enabled
         if (minPointsToClaim > 0) {
-            uint256 userPoints = calculateTotalPoints(msg.sender);
+            uint256 userPoint = userPoints[msg.sender];
             uint256 alreadyClaimed = claimedPoints[msg.sender];
-            require(userPoints >= alreadyClaimed + minPointsToClaim, "ClaimReward: insufficient points");
+            require(userPoint >= alreadyClaimed + minPointsToClaim, "RewardManager: insufficient points");
             claimedPoints[msg.sender] += minPointsToClaim;
             emit PointsClaimed(msg.sender, minPointsToClaim);
         }
@@ -136,17 +142,17 @@ contract ClaimReward is AccessControl {
         ClaimData[] memory claimsData,
         bytes[] memory signatures
     ) external {
-        require(claimsData.length == signatures.length, "ClaimReward: arrays length mismatch");
+        require(claimsData.length == signatures.length, "RewardManager: arrays length mismatch");
 
         for (uint256 i = 0; i < claimsData.length; i++) {
             ClaimData memory claimData = claimsData[i];
             bytes memory signature = signatures[i];
 
-            require(claimData.user == msg.sender, "ClaimReward: invalid user");
-            require(claimData.deadline >= block.timestamp, "ClaimReward: signature expired");
+            require(claimData.user == msg.sender, "RewardManager: invalid user");
+            require(claimData.deadline >= block.timestamp, "RewardManager: signature expired");
             
             uint256 currentNonce = nonces[msg.sender];
-            require(claimData.nonce == currentNonce, "ClaimReward: invalid nonce");
+            require(claimData.nonce == currentNonce, "RewardManager: invalid nonce");
 
             bytes32 structHash = keccak256(
                 abi.encode(
@@ -162,13 +168,13 @@ contract ClaimReward is AccessControl {
             bytes32 signedHash = _hashTypedDataV4(structHash);
             address signer = signedHash.recover(signature);
 
-            require(hasRole(SIGNER_ROLE, signer), "ClaimReward: invalid signature");
+            require(hasRole(SIGNER_ROLE, signer), "RewardManager: invalid signature");
 
             // Check points if validation is enabled
             if (minPointsToClaim > 0) {
-                uint256 userPoints = calculateTotalPoints(msg.sender);
+                uint256 userPoint = userPoints[msg.sender];
                 uint256 alreadyClaimed = claimedPoints[msg.sender];
-                require(userPoints >= alreadyClaimed + minPointsToClaim, "ClaimReward: insufficient points");
+                require(userPoint >= alreadyClaimed + minPointsToClaim, "RewardManager: insufficient points");
                 claimedPoints[msg.sender] += minPointsToClaim;
                 emit PointsClaimed(msg.sender, minPointsToClaim);
             }
@@ -196,34 +202,15 @@ contract ClaimReward is AccessControl {
         return MessageHashUtils.toTypedDataHash(DOMAIN_SEPARATOR, structHash);
     }
 
-    /**
-     * @dev Calculate total points from user's NFTs
-     * @param user Address of the user
-     * @return Total points accumulated
-     */
-    function calculateTotalPoints(address user) public view returns (uint256) {
-        uint256 totalSupply = orderNFT.totalSupply();
-        uint256 totalPoints = 0;
-
-        for (uint256 i = 1; i <= totalSupply; i++) {
-            if (orderNFT.ownerOf(i) == user) {
-                OrderNFT.OrderInfo memory orderInfo = orderNFT.getOrderInfo(i);
-                totalPoints += orderInfo.points;
-            }
-        }
-
-        return totalPoints;
-    }
-
-    /**
-     * @dev Get user's available points (total points - already claimed points)
-     * @param user Address of the user
-     * @return Available points that can be used for claiming
-     */
-    function getAvailablePoints(address user) external view returns (uint256) {
-        uint256 totalPoints = calculateTotalPoints(user);
-        uint256 claimed = claimedPoints[user];
-        return totalPoints >= claimed ? totalPoints - claimed : 0;
+    function addPoint(address user, uint256 tradeAmount) external onlyRole(POINTS_MANAGER_ROLE) {
+        require(tradeAmount > 0, "CR: TA Zero");
+        UD60x18 tradeAmountUD = UD60x18.wrap(tradeAmount);
+        UD60x18 toA = pow(tradeAmountUD, a);
+        UD60x18 points = mul(k, toA);
+        uint256 point = points.unwrap() / POINTS_SCALE;
+        userPoints[user] += point;
+        totalPoints += point;
+        emit PointsAdded(user, point);
     }
 
     /**

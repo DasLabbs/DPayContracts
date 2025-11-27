@@ -35,6 +35,7 @@ contract RewardVault is UUPSUpgradeable, AccessControlUpgradeable {
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
+        _grantRole(TREASURY_ROLE, admin);
     }
 
     /**

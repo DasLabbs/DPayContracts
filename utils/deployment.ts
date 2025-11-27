@@ -10,7 +10,7 @@ interface Web3UtilsInitial {
 export class Web3Utils {
   delayStep: number;
   redeploy: boolean;
-  db: Database;
+  public db: Database;
 
   constructor({ delayStep, redeploy }: Web3UtilsInitial) {
     this.delayStep = delayStep ?? 1000;
