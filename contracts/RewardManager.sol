@@ -29,11 +29,11 @@ contract RewardManager is AccessControl {
     // Mapping to track claimed points per user
     mapping(address => uint256) public claimedPoints;
 
-    uint256 public constant POINTS_SCALE = 1e18;
+    uint256 public constant POINTS_SCALE = 1e12;
 
     uint256 public totalPoints;
-    UD60x18 public immutable k = UD60x18.wrap(316227766017000);
-    UD60x18 public immutable a = UD60x18.wrap(1096910013008056000);
+    UD60x18 public immutable k = UD60x18.wrap(10000000000000000000000);
+    UD60x18 public immutable a = UD60x18.wrap(903089986991944000);
 
     // Configuration: minimum points required to claim (0 means disabled)
     uint256 public minPointsToClaim;

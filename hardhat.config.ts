@@ -18,8 +18,10 @@ const config: HardhatUserConfig = {
     hardhat: {
       chainId: 1337,
     },
-    localhost: {
+    ganache: {
       url: "http://127.0.0.1:8545",
+      accounts: [process.env.PRIVATE_KEY!],
+      chainId: 1337,
     },
     somnia: {
       url: "https://dream-rpc.somnia.network",
